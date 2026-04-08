@@ -124,10 +124,6 @@ class AntiRepeatGuard:
             self._last_event_ts = now
             return RepeatDecision(False, "empty_after_normalize", normalized)
 
-        if self._is_draft_tail_similar(normalized):
-            self._last_event_ts = now
-            return RepeatDecision(True, "similar_to_draft_tail", normalized)
-
         in_window = [
             t for ts, t in self.recent_outputs if now - ts <= self.repeat_window_sec and t == normalized
         ]
