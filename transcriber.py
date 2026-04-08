@@ -53,6 +53,7 @@ class TwoStageTranscriber:
         self._using_cuda = False
         self._final_text_history: list[str] = []
         self._recent_segments: list[AudioSegment] = []
+        self._last_seg_end_ts: Optional[float] = None
 
     def start(self) -> None:
         self._stop.clear()
@@ -83,6 +84,11 @@ class TwoStageTranscriber:
                 self.input_queue.task_done()
 
     def _handle_segment(self, seg: AudioSegment) -> None:
+        if self._last_seg_end_ts is not None and seg.start_ts - self._last_seg_end_ts >= 2.5:
+            self._final_text_history.clear()
+            self._recent_segments.clear()
+            self.logger.info("Silence gap detected, context histories reset (gap=%.2fs)", seg.start_ts - self._last_seg_end_ts)
+
         proc = preprocess_audio(seg.audio, seg.sample_rate, self.cfg.audio)
 
         ts = datetime.now().strftime("[%H:%M:%S]")
@@ -108,6 +114,7 @@ class TwoStageTranscriber:
         if corrected:
             self.output_queue.put(TranscriptionUpdate(seg.segment_id, ts, corrected, is_final=True))
             self._final_text_history.append(corrected)
+        self._last_seg_end_ts = seg.end_ts
 
     def _decode_quality_with_windows(self, audio: np.ndarray, context: str) -> str:
         windows = sliding_windows(

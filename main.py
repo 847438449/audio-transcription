@@ -11,6 +11,7 @@ from config import PRESETS, AppConfig
 from file_writer import TranscriptFileWriter
 from gui import TranscriberGUI
 from hotwords import load_hotwords
+from postprocess import AntiRepeatGuard
 from ring_buffer import RingBuffer
 from segmenter import SegmenterWorker
 from transcriber import TranscriptionUpdate, TwoStageTranscriber
@@ -38,6 +39,7 @@ class AppController:
 
         self.writer = TranscriptFileWriter(logging.getLogger("writer"))
         self.gui = TranscriberGUI(on_start=self.start, on_stop=self.stop)
+        self.repeat_guard = AntiRepeatGuard()
 
         self._running = False
         self._final_map: dict[int, TranscriptionUpdate] = {}
@@ -47,6 +49,7 @@ class AppController:
             return True
 
         try:
+            self.repeat_guard = AntiRepeatGuard()
             hotwords = load_hotwords(hotword_path)
             self.writer.open(txt_path, export_srt=export_srt)
 
@@ -123,12 +126,22 @@ class AppController:
             while True:
                 upd: TranscriptionUpdate = self.update_queue.get_nowait()
                 if upd.is_final:
+                    decision = self.repeat_guard.should_block(upd.text)
+                    self.logger.info(
+                        "anti_repeat_guard blocked_repeat=%s repeat_reason=%s normalized_text=%s",
+                        decision.blocked_repeat,
+                        decision.repeat_reason,
+                        decision.normalized_text,
+                    )
+                    if decision.blocked_repeat:
+                        continue
                     self._final_map[upd.segment_id] = upd
                     ordered = [self._final_map[k] for k in sorted(self._final_map.keys())]
                     final_content = "\n".join(f"{u.timestamp}\n{u.text}\n" for u in ordered)
                     self.gui.render_final(final_content)
                     self.writer.rewrite_all(ordered)
                 else:
+                    self.repeat_guard.update_draft(upd.text)
                     self.gui.show_draft(f"{upd.timestamp}\n{upd.text}")
         except Empty:
             pass

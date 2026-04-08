@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tkinter as tk
+from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, ttk
 from tkinter.scrolledtext import ScrolledText
@@ -33,7 +34,8 @@ class TranscriberGUI:
         top.pack(fill=tk.X)
 
         ttk.Label(top, text="输出TXT:").pack(side=tk.LEFT)
-        self.path_var = tk.StringVar(value=str(Path.cwd() / "transcript_output.txt"))
+        default_name = f"transcript_output_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        self.path_var = tk.StringVar(value=str(Path.cwd() / default_name))
         ttk.Entry(top, textvariable=self.path_var, width=64).pack(side=tk.LEFT, padx=6)
         ttk.Button(top, text="选择", command=self._choose_path).pack(side=tk.LEFT)
 
