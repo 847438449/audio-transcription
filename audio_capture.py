@@ -37,6 +37,8 @@ class WasapiLoopbackCapture:
         frame_seconds: float = 0.4,
         channels: int = 2,
         silence_rms_threshold: float = 0.008,
+        rms_smooth_alpha: float = 0.22,
+        speech_release_ratio: float = 0.68,
         logger: Optional[logging.Logger] = None,
     ) -> None:
         self.output_buffer = output_buffer
@@ -45,6 +47,8 @@ class WasapiLoopbackCapture:
         self.frame_seconds = frame_seconds
         self.channels = channels
         self.silence_rms_threshold = silence_rms_threshold
+        self.rms_smooth_alpha = rms_smooth_alpha
+        self.speech_release_ratio = speech_release_ratio
         self.logger = logger or logging.getLogger(__name__)
 
         self._thread: Optional[threading.Thread] = None
@@ -69,6 +73,8 @@ class WasapiLoopbackCapture:
         speech_frames = 0
         empty_reads = 0
         last_debug_ts = time.monotonic()
+        rms_ema = 0.0
+        speech_state = False
         try:
             speaker = sc.default_speaker()
             if speaker is None:
@@ -101,8 +107,13 @@ class WasapiLoopbackCapture:
                         chunk = np.mean(chunk, axis=1)
 
                     rms = float(np.sqrt(np.mean(np.square(chunk)) + 1e-12))
+                    rms_ema = self.rms_smooth_alpha * rms + (1.0 - self.rms_smooth_alpha) * rms_ema
                     frames_seen += 1
-                    is_speech = rms >= self.silence_rms_threshold
+                    if speech_state:
+                        speech_state = rms_ema >= self.silence_rms_threshold * self.speech_release_ratio
+                    else:
+                        speech_state = rms_ema >= self.silence_rms_threshold
+                    is_speech = speech_state
                     if is_speech:
                         speech_frames += 1
                     frame = AudioFrame(
@@ -120,7 +131,7 @@ class WasapiLoopbackCapture:
                             frames_seen,
                             speech_frames,
                             speech_ratio,
-                            rms,
+                            rms_ema,
                         )
                         last_debug_ts = now
 

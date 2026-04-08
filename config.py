@@ -21,8 +21,17 @@ class SegmentParams:
     min_segment_sec: float = 2.5
     max_segment_sec: float = 11.0
     silence_end_sec: float = 0.8
+    pre_speech_sec: float = 0.25
+    max_cut_carryover_sec: float = 0.35
     chunk_length_sec: float = 7.0
     overlap_seconds: float = 1.0
+
+
+@dataclass
+class CaptureParams:
+    silence_rms_threshold: float = 0.0028
+    rms_smooth_alpha: float = 0.22
+    speech_release_ratio: float = 0.68
 
 
 @dataclass
@@ -50,6 +59,7 @@ class RuntimeParams:
 class AppConfig:
     runtime: RuntimeParams = field(default_factory=RuntimeParams)
     segment: SegmentParams = field(default_factory=SegmentParams)
+    capture: CaptureParams = field(default_factory=CaptureParams)
     audio: AudioEnhanceParams = field(default_factory=AudioEnhanceParams)
     realtime_decode: DecodeParams = field(
         default_factory=lambda: DecodeParams(
@@ -80,12 +90,21 @@ PRESETS: dict[str, AppConfig] = {
         quality_decode=DecodeParams(beam_size=10, best_of=6, temperature=0.0, vad_filter=True, no_speech_threshold=0.45, log_prob_threshold=-1.0),
     ),
     "背景音乐场景": AppConfig(
+        capture=CaptureParams(silence_rms_threshold=0.0025, rms_smooth_alpha=0.26, speech_release_ratio=0.60),
         audio=AudioEnhanceParams(target_sample_rate=16000, target_rms=0.09, hp_hz=110.0, lp_hz=3600.0, band_low_hz=150.0, band_high_hz=3300.0),
-        segment=SegmentParams(min_segment_sec=2.5, max_segment_sec=10.5, silence_end_sec=0.7, chunk_length_sec=6.5, overlap_seconds=1.1),
+        segment=SegmentParams(min_segment_sec=2.8, max_segment_sec=11.5, silence_end_sec=0.95, pre_speech_sec=0.30, max_cut_carryover_sec=0.40, chunk_length_sec=7.0, overlap_seconds=1.2),
         quality_decode=DecodeParams(beam_size=12, best_of=8, temperature=0.0, vad_filter=True, no_speech_threshold=0.4, log_prob_threshold=-0.9),
         runtime=RuntimeParams(model_size="large-v3", language="ja", prefer_cuda=True, cuda_compute_type="float16", cpu_compute_type="int8", context_chars=220, quality_lookback_sec=18.0),
     ),
+    "高完整性模式": AppConfig(
+        capture=CaptureParams(silence_rms_threshold=0.0024, rms_smooth_alpha=0.30, speech_release_ratio=0.58),
+        segment=SegmentParams(min_segment_sec=3.2, max_segment_sec=13.0, silence_end_sec=1.15, pre_speech_sec=0.35, max_cut_carryover_sec=0.55, chunk_length_sec=8.0, overlap_seconds=1.4),
+        runtime=RuntimeParams(model_size="large-v3", language="ja", prefer_cuda=True, cuda_compute_type="float16", cpu_compute_type="int8", context_chars=260, quality_lookback_sec=20.0),
+        quality_decode=DecodeParams(beam_size=12, best_of=8, temperature=0.0, vad_filter=True, no_speech_threshold=0.42, log_prob_threshold=-0.95),
+    ),
     "高精度模式": AppConfig(
+        capture=CaptureParams(silence_rms_threshold=0.0032, rms_smooth_alpha=0.18, speech_release_ratio=0.75),
+        segment=SegmentParams(min_segment_sec=2.6, max_segment_sec=10.5, silence_end_sec=0.85, pre_speech_sec=0.22, max_cut_carryover_sec=0.25, chunk_length_sec=6.5, overlap_seconds=1.0),
         runtime=RuntimeParams(model_size="large-v3", language="ja", prefer_cuda=True, cuda_compute_type="float16", cpu_compute_type="int8", context_chars=260, quality_lookback_sec=20.0),
         quality_decode=DecodeParams(beam_size=14, best_of=8, temperature=0.0, vad_filter=True, no_speech_threshold=0.35, log_prob_threshold=-0.8),
     ),

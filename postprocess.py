@@ -124,6 +124,12 @@ class AntiRepeatGuard:
             self._last_event_ts = now
             return RepeatDecision(False, "empty_after_normalize", normalized)
 
+        if self.recent_outputs:
+            last_ts, last_text = self.recent_outputs[-1]
+            if normalized == last_text and now - last_ts <= 4.0:
+                self._last_event_ts = now
+                return RepeatDecision(True, "exact_duplicate_nearby", normalized)
+
         self.recent_outputs.append((now, normalized))
         self._last_event_ts = now
         return RepeatDecision(False, "accepted", normalized)

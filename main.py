@@ -43,6 +43,7 @@ class AppController:
 
         self._running = False
         self._final_map: dict[int, TranscriptionUpdate] = {}
+        self._draft_map: dict[int, TranscriptionUpdate] = {}
 
     def start(self, txt_path: str, export_srt: bool, hotword_path: str) -> bool:
         if self._running:
@@ -50,6 +51,8 @@ class AppController:
 
         try:
             self.repeat_guard = AntiRepeatGuard()
+            self._draft_map.clear()
+            self._final_map.clear()
             hotwords = load_hotwords(hotword_path)
             self.writer.open(txt_path, export_srt=export_srt)
 
@@ -59,7 +62,9 @@ class AppController:
                 sample_rate=self.cfg.audio.target_sample_rate,
                 frame_seconds=self.cfg.segment.frame_seconds,
                 channels=2,
-                silence_rms_threshold=0.0025,
+                silence_rms_threshold=self.cfg.capture.silence_rms_threshold,
+                rms_smooth_alpha=self.cfg.capture.rms_smooth_alpha,
+                speech_release_ratio=self.cfg.capture.speech_release_ratio,
                 logger=logging.getLogger("audio_capture"),
             )
             self.segmenter = SegmenterWorker(
@@ -138,6 +143,15 @@ class AppController:
                         continue
                     if decision.blocked_repeat:
                         continue
+                    draft_upd = self._draft_map.get(upd.segment_id)
+                    if draft_upd and len(upd.text.strip()) < max(6, int(len(draft_upd.text.strip()) * 0.6)):
+                        self.logger.info(
+                            "final_shorter_than_draft use_draft segment_id=%d final_len=%d draft_len=%d",
+                            upd.segment_id,
+                            len(upd.text.strip()),
+                            len(draft_upd.text.strip()),
+                        )
+                        upd = TranscriptionUpdate(upd.segment_id, upd.timestamp, draft_upd.text, is_final=True)
                     self._final_map[upd.segment_id] = upd
                     ordered = [self._final_map[k] for k in sorted(self._final_map.keys())]
                     final_content = "\n".join(f"{u.timestamp}\n{u.text}\n" for u in ordered)
@@ -145,6 +159,7 @@ class AppController:
                     self.writer.rewrite_all(ordered)
                 else:
                     self.logger.info("update_received type=draft segment_id=%d text_len=%d", upd.segment_id, len(upd.text or ""))
+                    self._draft_map[upd.segment_id] = upd
                     self.repeat_guard.update_draft(upd.text)
                     self.gui.show_draft(f"{upd.timestamp}\n{upd.text}")
         except Empty:

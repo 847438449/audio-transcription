@@ -6,6 +6,7 @@ import logging
 import queue
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Optional
 
@@ -52,6 +53,8 @@ class SegmenterWorker:
         self._frames_seen = 0
         self._speech_frames_seen = 0
         self._last_debug_ts = time.monotonic()
+        self._pre_roll_frames: deque[np.ndarray] = deque()
+        self._pre_roll_duration = 0.0
 
     def start(self) -> None:
         self._stop.clear()
@@ -96,7 +99,13 @@ class SegmenterWorker:
 
         if frame.is_speech or self._frames:
             if not self._frames:
-                self._start_ts = frame.captured_at
+                pre_roll_sec = self._pre_roll_duration
+                if self._pre_roll_frames:
+                    self._frames.extend(self._pre_roll_frames)
+                    self._duration += pre_roll_sec
+                    self._pre_roll_frames.clear()
+                    self._pre_roll_duration = 0.0
+                self._start_ts = frame.captured_at - pre_roll_sec
                 self._silence = 0.0
             self._frames.append(frame.audio)
             self._duration += frame.duration_sec
@@ -104,6 +113,8 @@ class SegmenterWorker:
 
             if self._need_cut():
                 self._flush(force=False)
+        else:
+            self._push_pre_roll(frame.audio, frame.duration_sec)
 
     def _debug_capture_flow(self) -> None:
         now = time.monotonic()
@@ -128,6 +139,18 @@ class SegmenterWorker:
             return True
         return False
 
+    def _push_pre_roll(self, audio: np.ndarray, duration: float) -> None:
+        target = max(0.0, self.cfg.pre_speech_sec)
+        if target <= 0:
+            self._pre_roll_frames.clear()
+            self._pre_roll_duration = 0.0
+            return
+        self._pre_roll_frames.append(audio)
+        self._pre_roll_duration += duration
+        while self._pre_roll_frames and self._pre_roll_duration > target:
+            popped = self._pre_roll_frames.popleft()
+            self._pre_roll_duration -= len(popped) / self.sample_rate
+
     def _flush(self, force: bool) -> None:
         if not self._frames:
             return
@@ -151,6 +174,19 @@ class SegmenterWorker:
             self._duration,
             force,
         )
+
+        hard_cut = self._duration >= self.cfg.max_segment_sec
+        if not force and hard_cut and self.cfg.max_cut_carryover_sec > 0:
+            carry_samples = int(self.cfg.max_cut_carryover_sec * self.sample_rate)
+            carry_samples = min(carry_samples, len(audio))
+            carry = audio[-carry_samples:].astype(np.float32)
+            self._frames = [carry]
+            self._duration = len(carry) / self.sample_rate
+            self._silence = 0.0
+            self._start_ts = seg.end_ts - self._duration
+            self._pre_roll_frames.clear()
+            self._pre_roll_duration = 0.0
+            return
 
         self._frames.clear()
         self._duration = 0.0

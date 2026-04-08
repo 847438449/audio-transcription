@@ -84,7 +84,7 @@ class TwoStageTranscriber:
                 self.input_queue.task_done()
 
     def _handle_segment(self, seg: AudioSegment) -> None:
-        if self._last_seg_end_ts is not None and seg.start_ts - self._last_seg_end_ts >= 2.5:
+        if self._last_seg_end_ts is not None and seg.start_ts - self._last_seg_end_ts >= 5.0:
             self._final_text_history.clear()
             self._recent_segments.clear()
             self.logger.info("Silence gap detected, context histories reset (gap=%.2fs)", seg.start_ts - self._last_seg_end_ts)
