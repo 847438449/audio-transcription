@@ -124,14 +124,6 @@ class AntiRepeatGuard:
             self._last_event_ts = now
             return RepeatDecision(False, "empty_after_normalize", normalized)
 
-        in_window = [
-            t for ts, t in self.recent_outputs if now - ts <= self.repeat_window_sec and t == normalized
-        ]
-        compact_len = len(normalized.replace(" ", ""))
-        if compact_len <= self.short_text_len and len(in_window) >= self.repeat_threshold:
-            self._last_event_ts = now
-            return RepeatDecision(True, "short_text_repeated_in_window", normalized)
-
         self.recent_outputs.append((now, normalized))
         self._last_event_ts = now
         return RepeatDecision(False, "accepted", normalized)
