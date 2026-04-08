@@ -1,0 +1,493 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>简单坦克大战</title>
+  <style>
+    :root {
+      --bg: #111;
+      --panel: #1b1b1b;
+      --text: #f5f5f5;
+      --player: #3fa9f5;
+      --enemy: #f56b6b;
+      --wall: #8d6e63;
+      --bullet: #ffd54f;
+      --grid: rgba(255, 255, 255, 0.05);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(180deg, #0f172a, #020617);
+      color: var(--text);
+      font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+      padding: 16px;
+    }
+
+    .game-wrap {
+      width: min(92vw, 900px);
+      background: rgba(0, 0, 0, 0.35);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
+    }
+
+    .hud {
+      background: var(--panel);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      justify-content: space-between;
+      padding: 10px 14px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      font-size: 15px;
+    }
+
+    .tips {
+      opacity: 0.85;
+      font-size: 13px;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      background: var(--bg);
+      image-rendering: pixelated;
+    }
+
+    .overlay {
+      position: absolute;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 0, 0, 0.5);
+      color: #fff;
+      font-size: 38px;
+      font-weight: 700;
+      letter-spacing: 2px;
+      text-shadow: 0 4px 10px rgba(0,0,0,0.4);
+    }
+
+    .canvas-wrap {
+      position: relative;
+    }
+  </style>
+</head>
+<body>
+  <div class="game-wrap">
+    <div class="hud">
+      <div id="hp">玩家血量: 100</div>
+      <div id="kills">击败敌人: 0</div>
+      <div class="tips">移动: WASD/方向键 ｜ 发射: 空格</div>
+    </div>
+    <div class="canvas-wrap">
+      <canvas id="game" width="900" height="540"></canvas>
+      <div id="gameOver" class="overlay">游戏失败</div>
+    </div>
+  </div>
+
+  <script>
+    // =====================
+    // 1) 基本配置
+    // =====================
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+    const hpEl = document.getElementById("hp");
+    const killsEl = document.getElementById("kills");
+    const gameOverEl = document.getElementById("gameOver");
+
+    const CONFIG = {
+      width: canvas.width,
+      height: canvas.height,
+      tankSize: 32,
+      playerSpeed: 2.4,
+      enemySpeed: 1.4,
+      bulletSpeed: 5,
+      playerShootCd: 240,  // 毫秒
+      enemyShootCd: 900,   // 毫秒
+      enemyChangeDirCd: 1000,
+      enemyCount: 4
+    };
+
+    // 简单墙体（矩形）
+    const walls = [
+      { x: 210, y: 110, w: 120, h: 40 },
+      { x: 520, y: 90,  w: 180, h: 40 },
+      { x: 360, y: 250, w: 50,  h: 140 },
+      { x: 650, y: 330, w: 160, h: 40 },
+      { x: 110, y: 360, w: 120, h: 40 }
+    ];
+
+    // =====================
+    // 2) 游戏对象
+    // =====================
+    const player = {
+      x: 80,
+      y: CONFIG.height / 2 - CONFIG.tankSize / 2,
+      size: CONFIG.tankSize,
+      speed: CONFIG.playerSpeed,
+      dir: "right", // up/down/left/right
+      hp: 100,
+      lastShotAt: 0,
+      alive: true
+    };
+
+    let kills = 0;
+
+    const enemies = [];
+    const bullets = [];
+
+    function createEnemy(x, y) {
+      return {
+        x,
+        y,
+        size: CONFIG.tankSize,
+        speed: CONFIG.enemySpeed,
+        dir: randomDir(),
+        hp: 40,
+        alive: true,
+        lastShotAt: 0,
+        lastDirChangeAt: 0
+      };
+    }
+
+    function initEnemies() {
+      enemies.length = 0;
+      enemies.push(createEnemy(760, 80));
+      enemies.push(createEnemy(760, 460));
+      enemies.push(createEnemy(500, 420));
+      enemies.push(createEnemy(620, 200));
+    }
+
+    initEnemies();
+
+    // =====================
+    // 3) 输入处理
+    // =====================
+    const keys = new Set();
+
+    window.addEventListener("keydown", (e) => {
+      const key = e.key.toLowerCase();
+      if ([" ", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(key)) {
+        e.preventDefault();
+      }
+      keys.add(key);
+
+      // 空格发射（按下即尝试发射）
+      if (key === " ") {
+        shoot(player, true);
+      }
+    });
+
+    window.addEventListener("keyup", (e) => {
+      keys.delete(e.key.toLowerCase());
+    });
+
+    // =====================
+    // 4) 工具函数
+    // =====================
+    function randomDir() {
+      const dirs = ["up", "down", "left", "right"];
+      return dirs[Math.floor(Math.random() * dirs.length)];
+    }
+
+    function rectsOverlap(a, b) {
+      return (
+        a.x < b.x + b.w &&
+        a.x + a.w > b.x &&
+        a.y < b.y + b.h &&
+        a.y + a.h > b.y
+      );
+    }
+
+    function tankRect(tank) {
+      return { x: tank.x, y: tank.y, w: tank.size, h: tank.size };
+    }
+
+    function insideMap(tank) {
+      return (
+        tank.x >= 0 &&
+        tank.y >= 0 &&
+        tank.x + tank.size <= CONFIG.width &&
+        tank.y + tank.size <= CONFIG.height
+      );
+    }
+
+    function collidesWithWall(rect) {
+      return walls.some((wall) => rectsOverlap(rect, wall));
+    }
+
+    function moveTank(tank, dx, dy) {
+      const oldX = tank.x;
+      const oldY = tank.y;
+
+      tank.x += dx;
+      tank.y += dy;
+
+      const rect = tankRect(tank);
+      if (!insideMap(tank) || collidesWithWall(rect)) {
+        tank.x = oldX;
+        tank.y = oldY;
+      }
+    }
+
+    function shoot(tank, isPlayer = false) {
+      const now = performance.now();
+      const cd = isPlayer ? CONFIG.playerShootCd : CONFIG.enemyShootCd;
+      if (now - tank.lastShotAt < cd) return;
+
+      tank.lastShotAt = now;
+
+      const size = 8;
+      const half = tank.size / 2;
+      const start = { x: tank.x + half - size / 2, y: tank.y + half - size / 2 };
+      let vx = 0;
+      let vy = 0;
+
+      if (tank.dir === "up") vy = -CONFIG.bulletSpeed;
+      if (tank.dir === "down") vy = CONFIG.bulletSpeed;
+      if (tank.dir === "left") vx = -CONFIG.bulletSpeed;
+      if (tank.dir === "right") vx = CONFIG.bulletSpeed;
+
+      bullets.push({
+        x: start.x,
+        y: start.y,
+        w: size,
+        h: size,
+        vx,
+        vy,
+        owner: isPlayer ? "player" : "enemy"
+      });
+    }
+
+    // =====================
+    // 5) 更新逻辑
+    // =====================
+    function updatePlayer() {
+      if (!player.alive) return;
+
+      let dx = 0;
+      let dy = 0;
+
+      if (keys.has("w") || keys.has("arrowup")) {
+        dy -= player.speed;
+        player.dir = "up";
+      }
+      if (keys.has("s") || keys.has("arrowdown")) {
+        dy += player.speed;
+        player.dir = "down";
+      }
+      if (keys.has("a") || keys.has("arrowleft")) {
+        dx -= player.speed;
+        player.dir = "left";
+      }
+      if (keys.has("d") || keys.has("arrowright")) {
+        dx += player.speed;
+        player.dir = "right";
+      }
+
+      moveTank(player, dx, dy);
+    }
+
+    function updateEnemies() {
+      const now = performance.now();
+
+      for (const enemy of enemies) {
+        if (!enemy.alive) continue;
+
+        // 定时随机换方向
+        if (now - enemy.lastDirChangeAt > CONFIG.enemyChangeDirCd) {
+          enemy.lastDirChangeAt = now;
+          enemy.dir = randomDir();
+        }
+
+        // 按方向移动
+        let dx = 0;
+        let dy = 0;
+        if (enemy.dir === "up") dy -= enemy.speed;
+        if (enemy.dir === "down") dy += enemy.speed;
+        if (enemy.dir === "left") dx -= enemy.speed;
+        if (enemy.dir === "right") dx += enemy.speed;
+
+        const oldX = enemy.x;
+        const oldY = enemy.y;
+        moveTank(enemy, dx, dy);
+
+        // 如果撞墙/边界导致没移动，则换方向
+        if (enemy.x === oldX && enemy.y === oldY) {
+          enemy.dir = randomDir();
+        }
+
+        // 定时开火
+        shoot(enemy, false);
+      }
+    }
+
+    function updateBullets() {
+      for (let i = bullets.length - 1; i >= 0; i--) {
+        const b = bullets[i];
+
+        b.x += b.vx;
+        b.y += b.vy;
+
+        // 出界就删除
+        if (
+          b.x + b.w < 0 ||
+          b.x > CONFIG.width ||
+          b.y + b.h < 0 ||
+          b.y > CONFIG.height
+        ) {
+          bullets.splice(i, 1);
+          continue;
+        }
+
+        // 打到墙就删除
+        if (collidesWithWall(b)) {
+          bullets.splice(i, 1);
+          continue;
+        }
+
+        // 玩家子弹 -> 敌人
+        if (b.owner === "player") {
+          let hit = false;
+          for (const enemy of enemies) {
+            if (!enemy.alive) continue;
+            if (rectsOverlap(b, tankRect(enemy))) {
+              enemy.hp -= 20;
+              if (enemy.hp <= 0) {
+                enemy.alive = false;
+                kills += 1;
+              }
+              hit = true;
+              break;
+            }
+          }
+          if (hit) {
+            bullets.splice(i, 1);
+            continue;
+          }
+        }
+
+        // 敌人子弹 -> 玩家
+        if (b.owner === "enemy" && player.alive && rectsOverlap(b, tankRect(player))) {
+          player.hp -= 10;
+          if (player.hp <= 0) {
+            player.hp = 0;
+            player.alive = false;
+            gameOverEl.style.display = "flex";
+          }
+          bullets.splice(i, 1);
+        }
+      }
+    }
+
+    function updateHUD() {
+      hpEl.textContent = `玩家血量: ${player.hp}`;
+      killsEl.textContent = `击败敌人: ${kills}`;
+    }
+
+    // =====================
+    // 6) 绘制逻辑
+    // =====================
+    function drawGrid() {
+      ctx.strokeStyle = "var(--grid)";
+      // canvas 里不能直接用 CSS 变量字符串给 strokeStyle 做透明网格，手动写
+      ctx.strokeStyle = "rgba(255,255,255,0.05)";
+      ctx.lineWidth = 1;
+
+      const step = 30;
+      for (let x = 0; x <= CONFIG.width; x += step) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, CONFIG.height);
+        ctx.stroke();
+      }
+      for (let y = 0; y <= CONFIG.height; y += step) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(CONFIG.width, y);
+        ctx.stroke();
+      }
+    }
+
+    function drawTank(tank, color) {
+      // 主体
+      ctx.fillStyle = color;
+      ctx.fillRect(tank.x, tank.y, tank.size, tank.size);
+
+      // 炮管
+      ctx.fillStyle = "#e5e7eb";
+      const cx = tank.x + tank.size / 2;
+      const cy = tank.y + tank.size / 2;
+
+      if (tank.dir === "up") ctx.fillRect(cx - 3, tank.y - 12, 6, 12);
+      if (tank.dir === "down") ctx.fillRect(cx - 3, tank.y + tank.size, 6, 12);
+      if (tank.dir === "left") ctx.fillRect(tank.x - 12, cy - 3, 12, 6);
+      if (tank.dir === "right") ctx.fillRect(tank.x + tank.size, cy - 3, 12, 6);
+
+      // 中心点
+      ctx.fillStyle = "rgba(0,0,0,0.25)";
+      ctx.beginPath();
+      ctx.arc(cx, cy, 6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    function drawWalls() {
+      ctx.fillStyle = "#8d6e63";
+      for (const wall of walls) {
+        ctx.fillRect(wall.x, wall.y, wall.w, wall.h);
+      }
+    }
+
+    function drawBullets() {
+      ctx.fillStyle = "#ffd54f";
+      for (const b of bullets) {
+        ctx.fillRect(b.x, b.y, b.w, b.h);
+      }
+    }
+
+    function render() {
+      ctx.clearRect(0, 0, CONFIG.width, CONFIG.height);
+      drawGrid();
+      drawWalls();
+
+      if (player.alive) {
+        drawTank(player, "#3fa9f5");
+      }
+
+      for (const enemy of enemies) {
+        if (enemy.alive) {
+          drawTank(enemy, "#f56b6b");
+        }
+      }
+
+      drawBullets();
+    }
+
+    // =====================
+    // 7) 主循环
+    // =====================
+    function gameLoop() {
+      if (player.alive) {
+        updatePlayer();
+        updateEnemies();
+        updateBullets();
+        updateHUD();
+      }
+
+      render();
+      requestAnimationFrame(gameLoop);
+    }
+
+    updateHUD();
+    gameLoop();
+  </script>
+</body>
+</html>
