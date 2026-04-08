@@ -59,7 +59,7 @@ class AppController:
                 sample_rate=self.cfg.audio.target_sample_rate,
                 frame_seconds=self.cfg.segment.frame_seconds,
                 channels=2,
-                silence_rms_threshold=0.008,
+                silence_rms_threshold=0.0025,
                 logger=logging.getLogger("audio_capture"),
             )
             self.segmenter = SegmenterWorker(
