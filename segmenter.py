@@ -65,7 +65,7 @@ class SegmenterWorker:
 
     def _run(self) -> None:
         while not self._stop.is_set():
-            frame = self.input_buffer.get(timeout=0.2)
+            frame = self.input_buffer.get(timeout=None)
             if frame is None:
                 self._flush(force=True)
                 self._safe_put(None)
