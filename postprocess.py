@@ -95,7 +95,7 @@ class AntiRepeatGuard:
         repeat_window_sec: float = 15.0,
         repeat_threshold: int = 2,
         silence_reset_sec: float = 2.5,
-        draft_similarity_threshold: float = 0.92,
+        draft_similarity_threshold: float = 0.98,
     ) -> None:
         self.recent_outputs: Deque[tuple[float, str]] = deque(maxlen=recent_cache_size)
         self.recent_hypotheses: Deque[str] = deque(maxlen=recent_cache_size)
@@ -122,7 +122,7 @@ class AntiRepeatGuard:
         normalized = normalize_for_repeat(text)
         if not normalized:
             self._last_event_ts = now
-            return RepeatDecision(True, "empty_after_normalize", normalized)
+            return RepeatDecision(False, "empty_after_normalize", normalized)
 
         if self._is_draft_tail_similar(normalized):
             self._last_event_ts = now
@@ -142,6 +142,8 @@ class AntiRepeatGuard:
 
     def _is_draft_tail_similar(self, normalized: str) -> bool:
         if not self.unconfirmed_tail:
+            return False
+        if len(normalized.replace(" ", "")) > 30:
             return False
         ratio = SequenceMatcher(None, self.unconfirmed_tail[-80:], normalized[-80:]).ratio()
         return ratio >= self.draft_similarity_threshold

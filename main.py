@@ -133,6 +133,8 @@ class AppController:
                         decision.repeat_reason,
                         decision.normalized_text,
                     )
+                    if decision.repeat_reason == "empty_after_normalize":
+                        continue
                     if decision.blocked_repeat:
                         continue
                     self._final_map[upd.segment_id] = upd
