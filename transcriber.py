@@ -96,6 +96,7 @@ class TwoStageTranscriber:
 
         draft = self._decode_once(proc, self.cfg.realtime_decode, context)
         draft = apply_correction_layer(cleanup_text(apply_hotwords(draft, self.hotwords)))
+        self.logger.info("transcriber_draft segment_id=%d text_len=%d", seg.segment_id, len(draft or ""))
         if draft:
             self.output_queue.put(TranscriptionUpdate(seg.segment_id, ts, draft, is_final=False))
 
@@ -111,6 +112,12 @@ class TwoStageTranscriber:
 
         # use tail as corrected current segment to simulate subtitle overwrite behavior
         corrected = tail_for_current_segment(quality_text, draft)
+        self.logger.info(
+            "transcriber_final segment_id=%d text_len=%d quality_len=%d",
+            seg.segment_id,
+            len(corrected or ""),
+            len(quality_text or ""),
+        )
         if corrected:
             self.output_queue.put(TranscriptionUpdate(seg.segment_id, ts, corrected, is_final=True))
             self._final_text_history.append(corrected)

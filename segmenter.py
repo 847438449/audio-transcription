@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -48,6 +49,9 @@ class SegmenterWorker:
         self._silence = 0.0
         self._start_ts = 0.0
         self._seg_id = 1
+        self._frames_seen = 0
+        self._speech_frames_seen = 0
+        self._last_debug_ts = time.monotonic()
 
     def start(self) -> None:
         self._stop.clear()
@@ -85,6 +89,11 @@ class SegmenterWorker:
                 pass
 
     def _consume(self, frame: AudioFrame) -> None:
+        self._frames_seen += 1
+        if frame.is_speech:
+            self._speech_frames_seen += 1
+        self._debug_capture_flow()
+
         if frame.is_speech or self._frames:
             if not self._frames:
                 self._start_ts = frame.captured_at
@@ -95,6 +104,22 @@ class SegmenterWorker:
 
             if self._need_cut():
                 self._flush(force=False)
+
+    def _debug_capture_flow(self) -> None:
+        now = time.monotonic()
+        if now - self._last_debug_ts < 2.0:
+            return
+        ratio = 0.0 if self._frames_seen == 0 else self._speech_frames_seen / self._frames_seen
+        self.logger.info(
+            "segmenter_flow frames=%d speech_frames=%d speech_ratio=%.3f buffering=%s duration=%.2fs silence=%.2fs",
+            self._frames_seen,
+            self._speech_frames_seen,
+            ratio,
+            bool(self._frames),
+            self._duration,
+            self._silence,
+        )
+        self._last_debug_ts = now
 
     def _need_cut(self) -> bool:
         if self._duration >= self.cfg.max_segment_sec:
@@ -119,6 +144,13 @@ class SegmenterWorker:
         )
         self._seg_id += 1
         self._safe_put(seg)
+        self.logger.info(
+            "segment_emitted id=%d samples=%d duration=%.2fs force=%s",
+            seg.segment_id,
+            len(seg.audio),
+            self._duration,
+            force,
+        )
 
         self._frames.clear()
         self._duration = 0.0

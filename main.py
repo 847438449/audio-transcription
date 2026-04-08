@@ -126,6 +126,7 @@ class AppController:
             while True:
                 upd: TranscriptionUpdate = self.update_queue.get_nowait()
                 if upd.is_final:
+                    self.logger.info("update_received type=final segment_id=%d text_len=%d", upd.segment_id, len(upd.text or ""))
                     decision = self.repeat_guard.should_block(upd.text)
                     self.logger.info(
                         "anti_repeat_guard blocked_repeat=%s repeat_reason=%s normalized_text=%s",
@@ -143,6 +144,7 @@ class AppController:
                     self.gui.render_final(final_content)
                     self.writer.rewrite_all(ordered)
                 else:
+                    self.logger.info("update_received type=draft segment_id=%d text_len=%d", upd.segment_id, len(upd.text or ""))
                     self.repeat_guard.update_draft(upd.text)
                     self.gui.show_draft(f"{upd.timestamp}\n{upd.text}")
         except Empty:
