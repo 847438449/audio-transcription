@@ -53,6 +53,7 @@ class TwoStageTranscriber:
         self._using_cuda = False
         self._final_text_history: list[str] = []
         self._recent_segments: list[AudioSegment] = []
+        self._last_seg_end_ts: Optional[float] = None
 
     def start(self) -> None:
         self._stop.clear()
@@ -83,6 +84,11 @@ class TwoStageTranscriber:
                 self.input_queue.task_done()
 
     def _handle_segment(self, seg: AudioSegment) -> None:
+        if self._last_seg_end_ts is not None and seg.start_ts - self._last_seg_end_ts >= 5.0:
+            self._final_text_history.clear()
+            self._recent_segments.clear()
+            self.logger.info("Silence gap detected, context histories reset (gap=%.2fs)", seg.start_ts - self._last_seg_end_ts)
+
         proc = preprocess_audio(seg.audio, seg.sample_rate, self.cfg.audio)
 
         ts = datetime.now().strftime("[%H:%M:%S]")
@@ -90,6 +96,7 @@ class TwoStageTranscriber:
 
         draft = self._decode_once(proc, self.cfg.realtime_decode, context)
         draft = apply_correction_layer(cleanup_text(apply_hotwords(draft, self.hotwords)))
+        self.logger.info("transcriber_draft segment_id=%d text_len=%d", seg.segment_id, len(draft or ""))
         if draft:
             self.output_queue.put(TranscriptionUpdate(seg.segment_id, ts, draft, is_final=False))
 
@@ -105,9 +112,16 @@ class TwoStageTranscriber:
 
         # use tail as corrected current segment to simulate subtitle overwrite behavior
         corrected = tail_for_current_segment(quality_text, draft)
+        self.logger.info(
+            "transcriber_final segment_id=%d text_len=%d quality_len=%d",
+            seg.segment_id,
+            len(corrected or ""),
+            len(quality_text or ""),
+        )
         if corrected:
             self.output_queue.put(TranscriptionUpdate(seg.segment_id, ts, corrected, is_final=True))
             self._final_text_history.append(corrected)
+        self._last_seg_end_ts = seg.end_ts
 
     def _decode_quality_with_windows(self, audio: np.ndarray, context: str) -> str:
         windows = sliding_windows(

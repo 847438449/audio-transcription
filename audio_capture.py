@@ -37,6 +37,8 @@ class WasapiLoopbackCapture:
         frame_seconds: float = 0.4,
         channels: int = 2,
         silence_rms_threshold: float = 0.008,
+        rms_smooth_alpha: float = 0.22,
+        speech_release_ratio: float = 0.68,
         logger: Optional[logging.Logger] = None,
     ) -> None:
         self.output_buffer = output_buffer
@@ -45,6 +47,8 @@ class WasapiLoopbackCapture:
         self.frame_seconds = frame_seconds
         self.channels = channels
         self.silence_rms_threshold = silence_rms_threshold
+        self.rms_smooth_alpha = rms_smooth_alpha
+        self.speech_release_ratio = speech_release_ratio
         self.logger = logger or logging.getLogger(__name__)
 
         self._thread: Optional[threading.Thread] = None
@@ -65,19 +69,37 @@ class WasapiLoopbackCapture:
 
     def _run(self) -> None:
         frames_per_buffer = max(1, int(self.sample_rate * self.frame_seconds))
+        frames_seen = 0
+        speech_frames = 0
+        empty_reads = 0
+        last_debug_ts = time.monotonic()
+        rms_ema = 0.0
+        speech_state = False
         try:
             speaker = sc.default_speaker()
             if speaker is None:
                 raise AudioCaptureError("No default speaker found.")
+            self.logger.info("Loopback speaker selected: %s", speaker.name)
 
             mic = sc.get_microphone(id=str(speaker.name), include_loopback=True)
             if mic is None:
                 raise AudioCaptureError("Unable to create WASAPI loopback microphone.")
+            self.logger.info(
+                "Loopback microphone ready: sample_rate=%d frame_seconds=%.2f silence_rms_threshold=%.4f",
+                self.sample_rate,
+                self.frame_seconds,
+                self.silence_rms_threshold,
+            )
 
             with mic.recorder(samplerate=self.sample_rate, channels=self.channels, blocksize=1024) as recorder:
                 while not self._stop_event.is_set():
                     data = recorder.record(numframes=frames_per_buffer)
                     if data is None or len(data) == 0:
+                        empty_reads += 1
+                        now = time.monotonic()
+                        if now - last_debug_ts >= 2.0:
+                            self.logger.info("capture_flow empty_reads=%d frames_seen=%d speech_frames=%d", empty_reads, frames_seen, speech_frames)
+                            last_debug_ts = now
                         continue
 
                     chunk = np.asarray(data, dtype=np.float32)
@@ -85,13 +107,33 @@ class WasapiLoopbackCapture:
                         chunk = np.mean(chunk, axis=1)
 
                     rms = float(np.sqrt(np.mean(np.square(chunk)) + 1e-12))
+                    rms_ema = self.rms_smooth_alpha * rms + (1.0 - self.rms_smooth_alpha) * rms_ema
+                    frames_seen += 1
+                    if speech_state:
+                        speech_state = rms_ema >= self.silence_rms_threshold * self.speech_release_ratio
+                    else:
+                        speech_state = rms_ema >= self.silence_rms_threshold
+                    is_speech = speech_state
+                    if is_speech:
+                        speech_frames += 1
                     frame = AudioFrame(
                         audio=chunk,
-                        is_speech=rms >= self.silence_rms_threshold,
+                        is_speech=is_speech,
                         duration_sec=len(chunk) / self.sample_rate,
                         captured_at=time.time(),
                     )
                     self.output_buffer.put(frame)
+                    now = time.monotonic()
+                    if now - last_debug_ts >= 2.0:
+                        speech_ratio = 0.0 if frames_seen == 0 else speech_frames / frames_seen
+                        self.logger.info(
+                            "capture_flow frames_seen=%d speech_frames=%d speech_ratio=%.3f rms=%.5f",
+                            frames_seen,
+                            speech_frames,
+                            speech_ratio,
+                            rms_ema,
+                        )
+                        last_debug_ts = now
 
         except Exception as exc:
             self.logger.exception("Audio capture failed.")

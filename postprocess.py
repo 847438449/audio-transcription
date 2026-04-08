@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 import re
+import time
+from collections import deque
+from dataclasses import dataclass
+from difflib import SequenceMatcher
+from typing import Deque
 
 
 def cleanup_text(text: str) -> str:
@@ -64,3 +69,82 @@ def split_for_subtitles(text: str) -> str:
     text = text.replace("、ただ", "、\nただ")
     text = text.replace("。また", "。\nまた")
     return text
+
+
+def normalize_for_repeat(text: str) -> str:
+    s = text.strip()
+    if not s:
+        return ""
+    s = re.sub(r"\s+", " ", s)
+    s = re.sub(r"([。！？、,.!?])\1+$", r"\1", s)
+    return s.strip()
+
+
+@dataclass
+class RepeatDecision:
+    blocked_repeat: bool
+    repeat_reason: str
+    normalized_text: str
+
+
+class AntiRepeatGuard:
+    def __init__(
+        self,
+        recent_cache_size: int = 10,
+        short_text_len: int = 20,
+        repeat_window_sec: float = 15.0,
+        repeat_threshold: int = 2,
+        silence_reset_sec: float = 2.5,
+        draft_similarity_threshold: float = 0.98,
+    ) -> None:
+        self.recent_outputs: Deque[tuple[float, str]] = deque(maxlen=recent_cache_size)
+        self.recent_hypotheses: Deque[str] = deque(maxlen=recent_cache_size)
+        self.unconfirmed_tail: str = ""
+        self.short_text_len = short_text_len
+        self.repeat_window_sec = repeat_window_sec
+        self.repeat_threshold = repeat_threshold
+        self.silence_reset_sec = silence_reset_sec
+        self.draft_similarity_threshold = draft_similarity_threshold
+        self._last_event_ts = time.monotonic()
+
+    def update_draft(self, draft_text: str) -> None:
+        now = time.monotonic()
+        self._maybe_reset_by_silence(now)
+        normalized = normalize_for_repeat(draft_text)
+        if normalized:
+            self.unconfirmed_tail = normalized[-120:]
+            self.recent_hypotheses.append(normalized)
+        self._last_event_ts = now
+
+    def should_block(self, text: str) -> RepeatDecision:
+        now = time.monotonic()
+        self._maybe_reset_by_silence(now)
+        normalized = normalize_for_repeat(text)
+        if not normalized:
+            self._last_event_ts = now
+            return RepeatDecision(False, "empty_after_normalize", normalized)
+
+        if self.recent_outputs:
+            last_ts, last_text = self.recent_outputs[-1]
+            if normalized == last_text and now - last_ts <= 4.0:
+                self._last_event_ts = now
+                return RepeatDecision(True, "exact_duplicate_nearby", normalized)
+
+        self.recent_outputs.append((now, normalized))
+        self._last_event_ts = now
+        return RepeatDecision(False, "accepted", normalized)
+
+    def _is_draft_tail_similar(self, normalized: str) -> bool:
+        if not self.unconfirmed_tail:
+            return False
+        if len(normalized.replace(" ", "")) > 30:
+            return False
+        ratio = SequenceMatcher(None, self.unconfirmed_tail[-80:], normalized[-80:]).ratio()
+        return ratio >= self.draft_similarity_threshold
+
+    def _maybe_reset_by_silence(self, now: float) -> None:
+        if now - self._last_event_ts < self.silence_reset_sec:
+            return
+        self.recent_outputs.clear()
+        self.recent_hypotheses.clear()
+        self.unconfirmed_tail = ""
