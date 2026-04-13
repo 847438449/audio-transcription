@@ -1,10 +1,11 @@
-# 高精度日语转写系统（Windows / faster-whisper）
+# 高精度多语言实时转写系统（Windows / faster-whisper）
 
-本项目是“工程强化版”的日语实时转写系统：
+本项目是“工程强化版”的实时转写系统（保留日语优化，并新增英文/粤语/自动检测）：
 
 - 目标不是原始 ASR 流，而是**接近字幕可读文本**
 - 重点场景：**直播 / 培训讲话 / 背景音乐存在**
 - 支持：**初稿实时显示 + 延迟精修覆盖**
+- 支持语言模式：**ja / en / zh / yue / auto**
 
 ---
 
@@ -37,7 +38,7 @@
 - 识别时使用 `chunk_length_sec + overlap_seconds`
 - 降低长句断裂、重复、漏词
 
-### 上下文注入
+### 上下文注入（按语言动态提示词）
 
 - 将前几段修正版作为 `initial_prompt` 的上下文
 - 提升长句连贯性和固定短语稳定性
@@ -71,6 +72,9 @@
 - `overlap_seconds`
 - `no_speech_threshold`
 - `log_prob_threshold`
+- `default_language`
+- `enable_auto_language_detection`
+- `model_by_language`
 
 推荐预设：
 
@@ -145,7 +149,23 @@ GUI 可指定热词词典路径（json 或 txt）：
 
 ---
 
-## 8. 下一步可继续提升
+## 8. 多语言模式说明
+
+- GUI 可选：`ja / en / yue / auto`
+- `zh` 手动模式保留在配置层（`config.py`，`runtime.language_mode="zh"`）
+- `auto` 模式流程：
+  1) 先用 `language=None` 触发 faster-whisper 语言检测  
+  2) 将检测语言写日志  
+  3) 再按检测结果进行正式转写（初稿 + 精修）
+
+### yue（粤语）兼容策略
+
+- faster-whisper 当前版本已包含 `yue` 语言码时，直接使用 `language="yue"`。
+- 若后续更换模型/版本不支持 `yue`，系统会自动回退 `zh` 并记录 warning 日志，避免主链路中断。
+
+---
+
+## 9. 下一步可继续提升
 
 1. 引入专业降噪/分离模型（Demucs / RNNoise / DNS）
 2. 引入语言模型重评分（N-best rerank）
@@ -154,7 +174,7 @@ GUI 可指定热词词典路径（json 或 txt）：
 5. 加入自动评估（CER/WER + 术语命中率）
 
 
-## 9. data discontinuity 修复说明
+## 10. data discontinuity 修复说明
 
 - 录音线程与识别线程已完全解耦：`capture -> RingBuffer -> segmenter -> transcriber`。
 - 采集线程写入 `RingBuffer` 时永不阻塞，识别卡顿不会打断采集。

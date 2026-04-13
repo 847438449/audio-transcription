@@ -38,7 +38,18 @@ class AudioEnhanceParams:
 @dataclass
 class RuntimeParams:
     model_size: str = "medium"  # switch to large-v3 for highest quality
-    language: str = "ja"
+    default_language: str = "ja"
+    language_mode: str = "ja"  # ja/en/zh/yue/auto
+    enable_auto_language_detection: bool = True
+    model_by_language: dict[str, str] = field(
+        default_factory=lambda: {
+            "ja": "large-v3",
+            "en": "large-v3",
+            "zh": "large-v3",
+            "yue": "large-v3",
+            "auto": "large-v3",
+        }
+    )
     prefer_cuda: bool = True
     cuda_compute_type: str = "float16"
     cpu_compute_type: str = "int8"
@@ -83,10 +94,10 @@ PRESETS: dict[str, AppConfig] = {
         audio=AudioEnhanceParams(target_sample_rate=16000, target_rms=0.09, hp_hz=110.0, lp_hz=3600.0, band_low_hz=150.0, band_high_hz=3300.0),
         segment=SegmentParams(min_segment_sec=2.5, max_segment_sec=10.5, silence_end_sec=0.7, chunk_length_sec=6.5, overlap_seconds=1.1),
         quality_decode=DecodeParams(beam_size=12, best_of=8, temperature=0.0, vad_filter=True, no_speech_threshold=0.4, log_prob_threshold=-0.9),
-        runtime=RuntimeParams(model_size="large-v3", language="ja", prefer_cuda=True, cuda_compute_type="float16", cpu_compute_type="int8", context_chars=220, quality_lookback_sec=18.0),
+        runtime=RuntimeParams(model_size="large-v3", default_language="ja", language_mode="ja", prefer_cuda=True, cuda_compute_type="float16", cpu_compute_type="int8", context_chars=220, quality_lookback_sec=18.0),
     ),
     "高精度模式": AppConfig(
-        runtime=RuntimeParams(model_size="large-v3", language="ja", prefer_cuda=True, cuda_compute_type="float16", cpu_compute_type="int8", context_chars=260, quality_lookback_sec=20.0),
+        runtime=RuntimeParams(model_size="large-v3", default_language="ja", language_mode="ja", prefer_cuda=True, cuda_compute_type="float16", cpu_compute_type="int8", context_chars=260, quality_lookback_sec=20.0),
         quality_decode=DecodeParams(beam_size=14, best_of=8, temperature=0.0, vad_filter=True, no_speech_threshold=0.35, log_prob_threshold=-0.8),
     ),
 }

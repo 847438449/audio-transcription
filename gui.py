@@ -12,7 +12,7 @@ from typing import Callable
 class TranscriberGUI:
     def __init__(
         self,
-        on_start: Callable[[str, bool, str], bool],
+        on_start: Callable[[str, bool, str, str], bool],
         on_stop: Callable[[], None],
     ) -> None:
         self.on_start = on_start
@@ -24,6 +24,12 @@ class TranscriberGUI:
 
         self._build_widgets()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.language_options = {
+            "日语": "ja",
+            "英语": "en",
+            "粤语": "yue",
+            "自动检测": "auto",
+        }
 
     def run(self) -> None:
         self.root.mainloop()
@@ -52,6 +58,17 @@ class TranscriberGUI:
         self.srt_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(ctrl, text="导出SRT", variable=self.srt_var).pack(side=tk.LEFT, padx=8)
 
+        self.language_var = tk.StringVar(value="日语")
+        self.language_combo = ttk.Combobox(
+            ctrl,
+            textvariable=self.language_var,
+            state="readonly",
+            values=list(self.language_options.keys()),
+            width=10,
+        )
+        self.language_combo.pack(side=tk.LEFT, padx=(8, 2))
+        ttk.Label(ctrl, text="语言模式").pack(side=tk.LEFT, padx=(2, 8))
+
         self.status_var = tk.StringVar(value="状态：未启动")
         ttk.Label(ctrl, textvariable=self.status_var).pack(side=tk.LEFT, padx=18)
 
@@ -74,7 +91,12 @@ class TranscriberGUI:
             self.path_var.set(p)
 
     def _start(self) -> None:
-        ok = self.on_start(self.path_var.get().strip(), self.srt_var.get(), self.hotword_var.get().strip())
+        ok = self.on_start(
+            self.path_var.get().strip(),
+            self.srt_var.get(),
+            self.hotword_var.get().strip(),
+            self.language_options.get(self.language_var.get().strip(), "ja"),
+        )
         if ok:
             self.set_running_ui(True)
             self.status_var.set("状态：运行中")
@@ -87,6 +109,7 @@ class TranscriberGUI:
     def set_running_ui(self, running: bool) -> None:
         self.start_btn.config(state=tk.DISABLED if running else tk.NORMAL)
         self.stop_btn.config(state=tk.NORMAL if running else tk.DISABLED)
+        self.language_combo.config(state=tk.DISABLED if running else "readonly")
 
     def show_draft(self, text: str) -> None:
         self.draft_text.insert(tk.END, text + "\n\n")

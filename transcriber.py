@@ -11,6 +11,7 @@ from typing import Optional
 
 import numpy as np
 from faster_whisper import WhisperModel
+from faster_whisper.tokenizer import _LANGUAGE_CODES
 
 from audio_preprocess import preprocess_audio
 from config import AppConfig, DecodeParams
@@ -53,6 +54,7 @@ class TwoStageTranscriber:
         self._using_cuda = False
         self._final_text_history: list[str] = []
         self._recent_segments: list[AudioSegment] = []
+        self._detected_language: Optional[str] = None
 
     def start(self) -> None:
         self._stop.clear()
@@ -86,9 +88,10 @@ class TwoStageTranscriber:
         proc = preprocess_audio(seg.audio, seg.sample_rate, self.cfg.audio)
 
         ts = datetime.now().strftime("[%H:%M:%S]")
+        active_language = self._resolve_runtime_language(proc)
         context = self._context_prompt()
 
-        draft = self._decode_once(proc, self.cfg.realtime_decode, context)
+        draft = self._decode_once(proc, self.cfg.realtime_decode, context, active_language)
         draft = apply_correction_layer(cleanup_text(apply_hotwords(draft, self.hotwords)))
         if draft:
             self.output_queue.put(TranscriptionUpdate(seg.segment_id, ts, draft, is_final=False))
@@ -98,7 +101,7 @@ class TwoStageTranscriber:
 
         # quality mode: re-run with stronger decode on recent 10-20s audio
         lookback_audio = self._recent_audio()
-        quality_text = self._decode_quality_with_windows(lookback_audio, context)
+        quality_text = self._decode_quality_with_windows(lookback_audio, context, active_language)
         quality_text = apply_correction_layer(cleanup_text(apply_hotwords(quality_text, self.hotwords)))
         if not quality_text:
             quality_text = draft
@@ -109,7 +112,7 @@ class TwoStageTranscriber:
             self.output_queue.put(TranscriptionUpdate(seg.segment_id, ts, corrected, is_final=True))
             self._final_text_history.append(corrected)
 
-    def _decode_quality_with_windows(self, audio: np.ndarray, context: str) -> str:
+    def _decode_quality_with_windows(self, audio: np.ndarray, context: str, language: Optional[str]) -> str:
         windows = sliding_windows(
             audio,
             self.cfg.audio.target_sample_rate,
@@ -118,13 +121,13 @@ class TwoStageTranscriber:
         )
         merged = ""
         for w in windows:
-            part = self._decode_once(w, self.cfg.quality_decode, context)
+            part = self._decode_once(w, self.cfg.quality_decode, context, language)
             merged = merge_overlap_text(merged, part)
         return merged.strip()
 
-    def _decode_once(self, audio: np.ndarray, params: DecodeParams, context: str) -> str:
+    def _decode_once(self, audio: np.ndarray, params: DecodeParams, context: str, language: Optional[str]) -> str:
         kwargs = dict(
-            language=self.cfg.runtime.language,
+            language=language,
             vad_filter=params.vad_filter,
             beam_size=params.beam_size,
             best_of=params.best_of,
@@ -135,6 +138,59 @@ class TwoStageTranscriber:
             initial_prompt=context,
         )
         return self._transcribe_with_retry(audio, kwargs)
+
+    def _resolve_runtime_language(self, audio: np.ndarray) -> Optional[str]:
+        mode = (self.cfg.runtime.language_mode or self.cfg.runtime.default_language).lower()
+        if mode == "auto":
+            if not self.cfg.runtime.enable_auto_language_detection:
+                fallback = self._normalize_language_code(self.cfg.runtime.default_language)
+                self.logger.info("自动检测已禁用，使用默认语言: %s", fallback)
+                return fallback
+            detected = self._detect_language(audio)
+            if detected:
+                self._detected_language = detected
+                mapped = self._normalize_language_code(detected)
+                self.logger.info("语言检测结果: %s -> 转写语言: %s", detected, mapped)
+                return mapped
+            fallback = self._normalize_language_code(self.cfg.runtime.default_language)
+            self.logger.warning("语言检测失败，回退默认语言: %s", fallback)
+            return fallback
+
+        resolved = self._normalize_language_code(mode)
+        self._detected_language = resolved
+        self.logger.info("手动语言模式: %s", resolved)
+        return resolved
+
+    def _detect_language(self, audio: np.ndarray) -> Optional[str]:
+        kwargs = dict(
+            language=None,
+            vad_filter=self.cfg.realtime_decode.vad_filter,
+            beam_size=1,
+            best_of=1,
+            temperature=0.0,
+            no_speech_threshold=self.cfg.realtime_decode.no_speech_threshold,
+            log_prob_threshold=self.cfg.realtime_decode.log_prob_threshold,
+            condition_on_previous_text=False,
+            initial_prompt=None,
+        )
+        try:
+            _, info = self._model.transcribe(audio, **kwargs)
+            return getattr(info, "language", None)
+        except Exception:
+            self.logger.exception("语言检测失败")
+            return None
+
+    def _normalize_language_code(self, language: Optional[str]) -> Optional[str]:
+        if not language:
+            return None
+        lang = language.lower()
+        if lang in _LANGUAGE_CODES:
+            return lang
+        if lang == "yue":
+            self.logger.warning("当前模型不支持 yue 语言码，回退 zh。")
+            return "zh"
+        self.logger.warning("未知语言码 '%s'，使用默认语言 '%s'。", lang, self.cfg.runtime.default_language)
+        return self.cfg.runtime.default_language
 
     def _transcribe_with_retry(self, audio: np.ndarray, kwargs: dict) -> str:
         try:
@@ -150,15 +206,17 @@ class TwoStageTranscriber:
             raise
 
     def _load_model_with_fallback(self) -> None:
+        language_mode = (self.cfg.runtime.language_mode or self.cfg.runtime.default_language).lower()
+        model_size = self.cfg.runtime.model_by_language.get(language_mode, self.cfg.runtime.model_size)
         if self.cfg.runtime.prefer_cuda:
             try:
                 self._model = WhisperModel(
-                    self.cfg.runtime.model_size,
+                    model_size,
                     device="cuda",
                     compute_type=self.cfg.runtime.cuda_compute_type,
                 )
                 self._using_cuda = True
-                self.logger.info("Transcriber backend: GPU/CUDA")
+                self.logger.info("Transcriber backend: GPU/CUDA (model=%s)", model_size)
                 return
             except Exception as exc:
                 self.logger.exception("CUDA init failed, fallback to CPU: %s", exc)
@@ -167,19 +225,27 @@ class TwoStageTranscriber:
         self._switch_to_cpu_model()
 
     def _switch_to_cpu_model(self) -> None:
+        language_mode = (self.cfg.runtime.language_mode or self.cfg.runtime.default_language).lower()
+        model_size = self.cfg.runtime.model_by_language.get(language_mode, self.cfg.runtime.model_size)
         self._model = WhisperModel(
-            self.cfg.runtime.model_size,
+            model_size,
             device="cpu",
             compute_type=self.cfg.runtime.cpu_compute_type,
         )
         self._using_cuda = False
-        self.logger.info("Transcriber backend: CPU")
+        self.logger.info("Transcriber backend: CPU (model=%s)", model_size)
 
     def _context_prompt(self) -> str:
-        base = (
-            "これは日本語の動画音声の文字起こしです。自然な日本語として出力してください。"
-            "句読点を補い、固有名詞とカタカナ語を正確に保ってください。"
-        )
+        lang = (self._detected_language or self.cfg.runtime.language_mode or self.cfg.runtime.default_language).lower()
+        if lang == "en":
+            base = "This is English transcription. Keep punctuation and proper nouns accurate."
+        elif lang in {"zh", "yue"}:
+            base = "这是中文语音转写。请保持自然、补全标点，并尽量保留专有名词。"
+        else:
+            base = (
+                "これは日本語の動画音声の文字起こしです。自然な日本語として出力してください。"
+                "句読点を補い、固有名詞とカタカナ語を正確に保ってください。"
+            )
         if not self._final_text_history:
             return base
         ctx = " ".join(self._final_text_history[-4:])

@@ -42,11 +42,13 @@ class AppController:
         self._running = False
         self._final_map: dict[int, TranscriptionUpdate] = {}
 
-    def start(self, txt_path: str, export_srt: bool, hotword_path: str) -> bool:
+    def start(self, txt_path: str, export_srt: bool, hotword_path: str, language_mode: str) -> bool:
         if self._running:
             return True
 
         try:
+            self.cfg.runtime.language_mode = (language_mode or self.cfg.runtime.default_language).lower()
+            self.cfg.runtime.enable_auto_language_detection = self.cfg.runtime.language_mode == "auto"
             hotwords = load_hotwords(hotword_path)
             self.writer.open(txt_path, export_srt=export_srt)
 
@@ -81,7 +83,7 @@ class AppController:
             self.capture.start()
 
             self._running = True
-            self.gui.set_status("状态：运行中（连续采集保护已启用）")
+            self.gui.set_status(f"状态：运行中（语言模式: {self.cfg.runtime.language_mode}）")
             self._poll()
             return True
         except Exception as exc:
