@@ -43,6 +43,13 @@ class AppController:
         self.segment_queue: Queue = Queue(maxsize=64)
         self.update_queue: Queue = Queue(maxsize=128)
         self.error_queue: Queue = Queue()
+        self.logger.info(
+            "Pipeline queue ids: frame_buffer=%s segment_queue=%s update_queue=%s error_queue=%s",
+            id(self.frame_buffer),
+            id(self.segment_queue),
+            id(self.update_queue),
+            id(self.error_queue),
+        )
 
     def start(self, txt_path: str, export_srt: bool, hotword_path: str, language_mode: str) -> bool:
         if self._running:

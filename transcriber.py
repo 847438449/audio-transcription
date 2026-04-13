@@ -54,6 +54,12 @@ class TwoStageTranscriber:
         self._final_text_history: list[str] = []
         self._recent_segments: list[AudioSegment] = []
         self._detected_language: Optional[str] = None
+        self.logger.info(
+            "Transcriber init: input_queue_id=%s output_queue_id=%s error_queue_id=%s",
+            id(self.input_queue),
+            id(self.output_queue),
+            id(self.error_queue) if self.error_queue is not None else None,
+        )
 
     def start(self) -> None:
         self._stop.clear()
