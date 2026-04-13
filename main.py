@@ -25,12 +25,7 @@ class AppController:
         self.logger = logging.getLogger("AppController")
 
         self.cfg: AppConfig = PRESETS["背景音乐场景"]
-
-        # Capture side ring buffer: guarantees capture never blocks on ASR slowdown.
-        self.frame_buffer: RingBuffer = RingBuffer(max_items=512)
-        self.segment_queue: Queue = Queue(maxsize=64)
-        self.update_queue: Queue = Queue(maxsize=128)
-        self.error_queue: Queue = Queue()
+        self._reset_pipeline_buffers()
 
         self.capture: Optional[WasapiLoopbackCapture] = None
         self.segmenter: Optional[SegmenterWorker] = None
@@ -42,12 +37,21 @@ class AppController:
         self._running = False
         self._final_map: dict[int, TranscriptionUpdate] = {}
 
+    def _reset_pipeline_buffers(self) -> None:
+        # Capture side ring buffer: guarantees capture never blocks on ASR slowdown.
+        self.frame_buffer: RingBuffer = RingBuffer(max_items=512)
+        self.segment_queue: Queue = Queue(maxsize=64)
+        self.update_queue: Queue = Queue(maxsize=128)
+        self.error_queue: Queue = Queue()
+
     def start(self, txt_path: str, export_srt: bool, hotword_path: str, language_mode: str) -> bool:
         if self._running:
             self.logger.warning("Start ignored: app is already running. current language_mode=%s", self.cfg.runtime.language_mode)
             return True
 
         try:
+            self._reset_pipeline_buffers()
+            self._final_map.clear()
             self.cfg.runtime.language_mode = (language_mode or self.cfg.runtime.default_language).lower()
             label_map = {"ja": "日语", "en": "英语", "zh": "中文", "yue": "粤语", "auto": "自动检测"}
             self.cfg.runtime.gui_language_label = label_map.get(self.cfg.runtime.language_mode, self.cfg.runtime.language_mode)
@@ -87,8 +91,15 @@ class AppController:
                 logger=logging.getLogger("transcriber"),
             )
 
+            self.logger.info("Starting segmenter thread")
             self.segmenter.start()
+            self.logger.info("Starting transcriber thread")
             self.transcriber.start()
+            self.logger.info(
+                "Starting audio capture thread (selected_label=%s, language_mode=%s)",
+                self.cfg.runtime.gui_language_label,
+                self.cfg.runtime.language_mode,
+            )
             self.capture.start()
 
             self._running = True
