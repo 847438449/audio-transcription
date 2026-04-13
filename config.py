@@ -40,6 +40,7 @@ class RuntimeParams:
     model_size: str = "medium"  # switch to large-v3 for highest quality
     default_language: str = "ja"
     language_mode: str = "ja"  # ja/en/zh/yue/auto
+    gui_language_label: str = "日语"
     enable_auto_language_detection: bool = True
     model_by_language: dict[str, str] = field(
         default_factory=lambda: {

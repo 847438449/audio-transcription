@@ -44,11 +44,20 @@ class AppController:
 
     def start(self, txt_path: str, export_srt: bool, hotword_path: str, language_mode: str) -> bool:
         if self._running:
+            self.logger.warning("Start ignored: app is already running. current language_mode=%s", self.cfg.runtime.language_mode)
             return True
 
         try:
             self.cfg.runtime.language_mode = (language_mode or self.cfg.runtime.default_language).lower()
+            label_map = {"ja": "日语", "en": "英语", "zh": "中文", "yue": "粤语", "auto": "自动检测"}
+            self.cfg.runtime.gui_language_label = label_map.get(self.cfg.runtime.language_mode, self.cfg.runtime.language_mode)
             self.cfg.runtime.enable_auto_language_detection = self.cfg.runtime.language_mode == "auto"
+            self.logger.info(
+                "GUI 语言选择: label=%s code=%s auto_detection=%s",
+                self.cfg.runtime.gui_language_label,
+                self.cfg.runtime.language_mode,
+                self.cfg.runtime.enable_auto_language_detection,
+            )
             hotwords = load_hotwords(hotword_path)
             self.writer.open(txt_path, export_srt=export_srt)
 

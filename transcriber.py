@@ -11,7 +11,6 @@ from typing import Optional
 
 import numpy as np
 from faster_whisper import WhisperModel
-from faster_whisper.tokenizer import _LANGUAGE_CODES
 
 from audio_preprocess import preprocess_audio
 from config import AppConfig, DecodeParams
@@ -126,6 +125,7 @@ class TwoStageTranscriber:
         return merged.strip()
 
     def _decode_once(self, audio: np.ndarray, params: DecodeParams, context: str, language: Optional[str]) -> str:
+        self.logger.info("Transcribe request language=%s beam=%s best_of=%s", language, params.beam_size, params.best_of)
         kwargs = dict(
             language=language,
             vad_filter=params.vad_filter,
@@ -141,16 +141,17 @@ class TwoStageTranscriber:
 
     def _resolve_runtime_language(self, audio: np.ndarray) -> Optional[str]:
         mode = (self.cfg.runtime.language_mode or self.cfg.runtime.default_language).lower()
+        self.logger.info("GUI语言标签=%s, 运行语言模式=%s", self.cfg.runtime.gui_language_label, mode)
         if mode == "auto":
             if not self.cfg.runtime.enable_auto_language_detection:
                 fallback = self._normalize_language_code(self.cfg.runtime.default_language)
                 self.logger.info("自动检测已禁用，使用默认语言: %s", fallback)
                 return fallback
-            detected = self._detect_language(audio)
+            detected, prob = self._detect_language(audio)
             if detected:
                 self._detected_language = detected
                 mapped = self._normalize_language_code(detected)
-                self.logger.info("语言检测结果: %s -> 转写语言: %s", detected, mapped)
+                self.logger.info("语言检测结果: %s (prob=%.4f) -> 转写语言: %s", detected, prob, mapped)
                 return mapped
             fallback = self._normalize_language_code(self.cfg.runtime.default_language)
             self.logger.warning("语言检测失败，回退默认语言: %s", fallback)
@@ -161,7 +162,7 @@ class TwoStageTranscriber:
         self.logger.info("手动语言模式: %s", resolved)
         return resolved
 
-    def _detect_language(self, audio: np.ndarray) -> Optional[str]:
+    def _detect_language(self, audio: np.ndarray) -> tuple[Optional[str], float]:
         kwargs = dict(
             language=None,
             vad_filter=self.cfg.realtime_decode.vad_filter,
@@ -175,20 +176,20 @@ class TwoStageTranscriber:
         )
         try:
             _, info = self._model.transcribe(audio, **kwargs)
-            return getattr(info, "language", None)
-        except Exception:
-            self.logger.exception("语言检测失败")
-            return None
+            return getattr(info, "language", None), float(getattr(info, "language_probability", 0.0) or 0.0)
+        except Exception as exc:
+            self.logger.exception("语言检测失败: %s", exc)
+            return None, 0.0
 
     def _normalize_language_code(self, language: Optional[str]) -> Optional[str]:
         if not language:
             return None
         lang = language.lower()
-        if lang in _LANGUAGE_CODES:
-            return lang
         if lang == "yue":
-            self.logger.warning("当前模型不支持 yue 语言码，回退 zh。")
+            self.logger.info("粤语模式优先走 zh 路径以保证稳定性。")
             return "zh"
+        if lang in {"ja", "en", "zh", "auto"}:
+            return lang
         self.logger.warning("未知语言码 '%s'，使用默认语言 '%s'。", lang, self.cfg.runtime.default_language)
         return self.cfg.runtime.default_language
 
@@ -201,8 +202,13 @@ class TwoStageTranscriber:
                 self.logger.exception("GPU runtime failed, switching to CPU and retrying current audio.")
                 self._push_error("GPU 推理异常，已自动切换 CPU 并重试当前段。")
                 self._switch_to_cpu_model()
-                segments, _ = self._model.transcribe(audio, **kwargs)
-                return " ".join(s.text.strip() for s in segments if s.text and s.text.strip()).strip()
+                try:
+                    segments, _ = self._model.transcribe(audio, **kwargs)
+                    return " ".join(s.text.strip() for s in segments if s.text and s.text.strip()).strip()
+                except Exception as retry_exc:
+                    self.logger.exception("CPU retry failed with language=%s: %s", kwargs.get("language"), retry_exc)
+                    raise
+            self.logger.exception("Transcribe failed with language=%s: %s", kwargs.get("language"), exc)
             raise
 
     def _load_model_with_fallback(self) -> None:
