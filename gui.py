@@ -18,18 +18,19 @@ class TranscriberGUI:
         self.on_start = on_start
         self.on_stop = on_stop
 
-        self.root = tk.Tk()
-        self.root.title("高精度日语转写系统（初稿→修正版）")
-        self.root.geometry("1020x760")
-
-        self._build_widgets()
-        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.language_options = {
             "日语": "ja",
             "英语": "en",
             "粤语": "yue",
             "自动检测": "auto",
         }
+
+        self.root = tk.Tk()
+        self.root.title("高精度日语转写系统（初稿→修正版）")
+        self.root.geometry("1020x760")
+
+        self._build_widgets()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def run(self) -> None:
         self.root.mainloop()
