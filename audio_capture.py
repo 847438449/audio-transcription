@@ -49,6 +49,9 @@ class WasapiLoopbackCapture:
 
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
+        self._frame_count = 0
+        self._no_speech_sec = 0.0
+        self.logger.info("AudioCapture init: output_buffer_id=%s", id(self.output_buffer))
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -69,10 +72,12 @@ class WasapiLoopbackCapture:
             speaker = sc.default_speaker()
             if speaker is None:
                 raise AudioCaptureError("No default speaker found.")
+            self.logger.info("Audio capture speaker device: %s", speaker.name)
 
             mic = sc.get_microphone(id=str(speaker.name), include_loopback=True)
             if mic is None:
                 raise AudioCaptureError("Unable to create WASAPI loopback microphone.")
+            self.logger.info("Audio capture loopback mic: %s (include_loopback=True)", mic.name)
 
             with mic.recorder(samplerate=self.sample_rate, channels=self.channels, blocksize=1024) as recorder:
                 while not self._stop_event.is_set():
@@ -91,7 +96,30 @@ class WasapiLoopbackCapture:
                         duration_sec=len(chunk) / self.sample_rate,
                         captured_at=time.time(),
                     )
+                    self._frame_count += 1
+                    self._no_speech_sec = 0.0 if frame.is_speech else self._no_speech_sec + frame.duration_sec
+                    dropped_before = self.output_buffer.dropped_items
                     self.output_buffer.put(frame)
+                    dropped_after = self.output_buffer.dropped_items
+                    if self._frame_count % 20 == 0:
+                        self.logger.info(
+                            "capture_flow: frame_count=%d rms=%.5f threshold=%.5f is_speech=%s queue_size=%d",
+                            self._frame_count,
+                            rms,
+                            self.silence_rms_threshold,
+                            frame.is_speech,
+                            self.output_buffer.size,
+                        )
+                    if dropped_after > dropped_before:
+                        self.logger.warning("capture_flow: frame dropped due ring buffer full. dropped_total=%d", dropped_after)
+                    if self._no_speech_sec >= 5.0:
+                        self.logger.warning(
+                            "capture_flow: no speech frame for %.1fs (threshold=%.5f, latest_rms=%.5f)",
+                            self._no_speech_sec,
+                            self.silence_rms_threshold,
+                            rms,
+                        )
+                        self._no_speech_sec = 0.0
 
         except Exception as exc:
             self.logger.exception("Audio capture failed.")

@@ -25,12 +25,7 @@ class AppController:
         self.logger = logging.getLogger("AppController")
 
         self.cfg: AppConfig = PRESETS["背景音乐场景"]
-
-        # Capture side ring buffer: guarantees capture never blocks on ASR slowdown.
-        self.frame_buffer: RingBuffer = RingBuffer(max_items=512)
-        self.segment_queue: Queue = Queue(maxsize=64)
-        self.update_queue: Queue = Queue(maxsize=128)
-        self.error_queue: Queue = Queue()
+        self._reset_pipeline_buffers()
 
         self.capture: Optional[WasapiLoopbackCapture] = None
         self.segmenter: Optional[SegmenterWorker] = None
@@ -42,11 +37,38 @@ class AppController:
         self._running = False
         self._final_map: dict[int, TranscriptionUpdate] = {}
 
-    def start(self, txt_path: str, export_srt: bool, hotword_path: str) -> bool:
+    def _reset_pipeline_buffers(self) -> None:
+        # Capture side ring buffer: guarantees capture never blocks on ASR slowdown.
+        self.frame_buffer: RingBuffer = RingBuffer(max_items=512)
+        self.segment_queue: Queue = Queue(maxsize=64)
+        self.update_queue: Queue = Queue(maxsize=128)
+        self.error_queue: Queue = Queue()
+        self.logger.info(
+            "Pipeline queue ids: frame_buffer=%s segment_queue=%s update_queue=%s error_queue=%s",
+            id(self.frame_buffer),
+            id(self.segment_queue),
+            id(self.update_queue),
+            id(self.error_queue),
+        )
+
+    def start(self, txt_path: str, export_srt: bool, hotword_path: str, language_mode: str) -> bool:
         if self._running:
+            self.logger.warning("Start ignored: app is already running. current language_mode=%s", self.cfg.runtime.language_mode)
             return True
 
         try:
+            self._reset_pipeline_buffers()
+            self._final_map.clear()
+            self.cfg.runtime.language_mode = (language_mode or self.cfg.runtime.default_language).lower()
+            label_map = {"ja": "日语", "en": "英语", "zh": "中文", "yue": "粤语", "auto": "自动检测"}
+            self.cfg.runtime.gui_language_label = label_map.get(self.cfg.runtime.language_mode, self.cfg.runtime.language_mode)
+            self.cfg.runtime.enable_auto_language_detection = self.cfg.runtime.language_mode == "auto"
+            self.logger.info(
+                "GUI 语言选择: label=%s code=%s auto_detection=%s",
+                self.cfg.runtime.gui_language_label,
+                self.cfg.runtime.language_mode,
+                self.cfg.runtime.enable_auto_language_detection,
+            )
             hotwords = load_hotwords(hotword_path)
             self.writer.open(txt_path, export_srt=export_srt)
 
@@ -76,12 +98,19 @@ class AppController:
                 logger=logging.getLogger("transcriber"),
             )
 
+            self.logger.info("Starting segmenter thread")
             self.segmenter.start()
+            self.logger.info("Starting transcriber thread")
             self.transcriber.start()
+            self.logger.info(
+                "Starting audio capture thread (selected_label=%s, language_mode=%s)",
+                self.cfg.runtime.gui_language_label,
+                self.cfg.runtime.language_mode,
+            )
             self.capture.start()
 
             self._running = True
-            self.gui.set_status("状态：运行中（连续采集保护已启用）")
+            self.gui.set_status(f"状态：运行中（语言模式: {self.cfg.runtime.language_mode}）")
             self._poll()
             return True
         except Exception as exc:

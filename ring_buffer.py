@@ -21,6 +21,14 @@ class RingBuffer(Generic[T]):
     def dropped_items(self) -> int:
         return self._dropped
 
+    @property
+    def is_closed(self) -> bool:
+        return self._closed
+
+    @property
+    def size(self) -> int:
+        return len(self._buf)
+
     def put(self, item: T) -> None:
         with self._cv:
             if self._closed:

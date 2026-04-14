@@ -48,6 +48,12 @@ class SegmenterWorker:
         self._silence = 0.0
         self._start_ts = 0.0
         self._seg_id = 1
+        self._frame_count = 0
+        self.logger.info(
+            "Segmenter init: input_buffer_id=%s output_queue_id=%s",
+            id(self.input_buffer),
+            id(self.output_queue),
+        )
 
     def start(self) -> None:
         self._stop.clear()
@@ -63,11 +69,18 @@ class SegmenterWorker:
         while not self._stop.is_set():
             frame = self.input_buffer.get(timeout=0.2)
             if frame is None:
-                self._flush(force=True)
-                self._safe_put(None)
-                break
+                if self.input_buffer.is_closed:
+                    self.logger.info("segmenter_flow: input buffer closed, flushing and stopping.")
+                    self._flush(force=True)
+                    self._safe_put(None)
+                    break
+                self.logger.debug("segmenter_flow: waiting for frame...")
+                continue
 
             try:
+                self._frame_count += 1
+                if self._frame_count % 25 == 0:
+                    self.logger.info("segmenter_flow: received_frames=%d buffered_duration=%.2fs", self._frame_count, self._duration)
                 self._consume(frame)
             except Exception as exc:
                 self.logger.exception("Segmenter error")
@@ -85,6 +98,7 @@ class SegmenterWorker:
                 pass
 
     def _consume(self, frame: AudioFrame) -> None:
+        self.logger.debug("segmenter_flow: frame is_speech=%s duration=%.3fs", frame.is_speech, frame.duration_sec)
         if frame.is_speech or self._frames:
             if not self._frames:
                 self._start_ts = frame.captured_at
@@ -108,6 +122,8 @@ class SegmenterWorker:
             return
         if not force and self._duration < self.cfg.min_segment_sec:
             return
+        reason = "force_flush" if force else ("max_duration_flush" if self._duration >= self.cfg.max_segment_sec else "silence_flush")
+        self.logger.info("segment_emitted: reason=%s duration=%.2fs frames=%d", reason, self._duration, len(self._frames))
 
         audio = np.concatenate(self._frames).astype(np.float32)
         seg = AudioSegment(
